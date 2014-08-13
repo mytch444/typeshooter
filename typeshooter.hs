@@ -13,6 +13,7 @@ import Data.Int
 import Foreign.Ptr
 import Data.Bits
 import System.Random
+import Control.Exception
 
 type Location = (Double, Double)
 type Word = (([Char], [Char], [Char]), Location)
@@ -64,9 +65,12 @@ delay = ceiling (1000 / fps) * 1000
 bulletSpeed = -6
 wordSpeed = 1
 
-newWordChance = 1000
+newWordChance = 10
 
 playerSide = 20
+
+fontList :: [String]
+fontList = ["-misc-ubuntu mono-medium-r-normal--0-0-0-0-m-0-iso8859-16", "-xos4-terminus-medium-r-normal--18-240-72-72-c-120-iso10646-1", "-misc-liberation mono-medium-r-normal--0-0-0-0-p-0-iso8859-16",  "fixed"]
 
 main :: IO ()
 main = do
@@ -82,22 +86,29 @@ main = do
 
     gc <- createGC dpy win
 
-    fontstruct <- loadQueryFont dpy "fixed"
+    fontstruct <- getFont dpy 0
     setFont dpy gc (fontFromFontStruct fontstruct)
 
-    loop dpy win gc fontstruct (0.0, (0.0, 0.0)) [] [] (("", "", ""), (0, 0))
+    loop dpy win gc fontstruct (0.0, (0.0, 0.0)) [] [] (("", "", ""), (0, 0)) 0
 
     freeGC dpy gc
     freeFont dpy fontstruct
 
     exitWith ExitSuccess
 
+getFont :: Display -> Int -> IO FontStruct
+getFont dpy try = do
+  fontstruct <- handle
+                ((\_ -> (getFont dpy (try + 1))) :: IOException -> IO FontStruct)
+                (loadQueryFont dpy (fontList !! try))
+  return fontstruct
+
 textHeight :: FontStruct -> String -> Double
 textHeight font string = fromIntegral (ascent + descent)
                   where (_, ascent, descent, _) = textExtents font string
 
-pause :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> IO ()
-pause dpy win gc font player bullets words word = do
+pause :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
+pause dpy win gc font player bullets words word score = do
   allocaXEvent $ \e -> do
     putStr "Pausing\n"
     nextEvent dpy e
@@ -108,22 +119,20 @@ pause dpy win gc font player bullets words word = do
       keysym <- keycodeToKeysym dpy keycode 0
       if ((keysymToString keysym) == "Escape")
         then return ()
-        else loop dpy win gc font player bullets words word
-      else pause dpy win gc font player bullets words word
+        else loop dpy win gc font player bullets words word score
+      else pause dpy win gc font player bullets words word score
 
-loop :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> IO ()
-loop dpy win gc font (pa, (px, py)) bullets words word = do
---  putStr ("In loop\n")
+loop :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
+loop dpy win gc font (pa, (px, py)) bullets words word score = do
   (_, _, _, width, height, _, _) <- getGeometry dpy win
   let player = (pa, ((fromIntegral width :: Double) / 2, (fromIntegral height :: Double) - 30))
 
   setForeground dpy gc 0x000000
   fillRectangle dpy win gc 0 0 width height
   drawBullets dpy win gc bullets
---  putStr ("Words\n")
   drawWords dpy win gc font words
---  putStr ("Done words\n")
   drawPlayer dpy win gc player
+  drawScore dpy win gc font width height score
 
   threadDelay delay  
 
@@ -135,40 +144,38 @@ loop dpy win gc font (pa, (px, py)) bullets words word = do
     then loop dpy win gc font player
          (updateBullets font player bullets)
          (updateWords font height player bullets (possiblyAddWord rand width height words))
-         word
-    else
-    handleEvent dpy win gc font width height rand player bullets words word
+         word score
+    else handleEvent dpy win gc font width height rand player bullets words word score
 
-handleEvent :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> StdGen -> Player -> [Bullet] -> [Word] -> Word -> IO ()
-handleEvent dpy win gc font width height rand player bullets words word =
+handleEvent :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> StdGen -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
+handleEvent dpy win gc font width height rand player bullets words word score =
   allocaXEvent $ \e -> do
-    putStr ("Waiting for event\n")
     nextEvent dpy e
---    putStr ("Got event\n")
     et <- get_EventType e
     if (et == keyPress)
       then do
       (_, _, _, _, _, _, _, mod, keycode, _) <- get_KeyEvent e
       keysym <- keycodeToKeysym dpy keycode 0
-      putStr ("Keypress\n")
-      handleKeyPress dpy win gc font width height rand player bullets words word keysym
+      putStr ("Key pressed " ++ (keysymToString keysym) ++ "\n")
+      handleKeyPress dpy win gc font width height rand player bullets words word score keysym
       else loop dpy win gc font player
            (updateBullets font player bullets)
            (updateWords font height player bullets (possiblyAddWord rand width height words))
-           word
+           word score
 
-handleKeyPress :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> StdGen -> Player -> [Bullet] -> [Word] -> Word -> KeySym -> IO ()
-handleKeyPress dpy win gc font width height rand player bullets words word@((_, _, alive), _) keysym =
+handleKeyPress :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> StdGen -> Player -> [Bullet] -> [Word] -> Word -> Int -> KeySym -> IO ()
+handleKeyPress dpy win gc font width height rand player bullets words word@((_, _, alive), _) score keysym =
   if (string == "Escape")
-  then pause dpy win gc font player bullets words word
+  then pause dpy win gc font player bullets words word score
   else if (not (newalive == "") && newalive !! 0 == char)
        then next (pointPlayerTowards newword player)
             (updateBullets font player ((createBullet font player updatednewword) : bullets))
             (updateWords font height player bullets (swapWordInList updatednewword newword words))
-            (updateWord font player bullets updatednewword)
+            (updateWord font player bullets updatednewword) (score + 1)
        else next player
            (updateBullets font player bullets)
-           (updateWords font height player bullets (possiblyAddWord rand width height words)) word
+           (updateWords font height player bullets (possiblyAddWord rand width height words))
+           word score
   where string = keysymToString keysym
         char = string !! 0
         newword@((total, newdead, newalive), newpos) =
@@ -185,8 +192,7 @@ drawBullets dpy win gc ((word, (x, y), (x1, y1)):bullets) = do
 
 drawWords :: Display -> Window -> GC -> FontStruct -> [Word] -> IO ()
 drawWords _ _ _ _ [] = return ()
-drawWords dpy win gc font (((_, dead, alive), (x, y)):words) = do
---  putStr ("Drawing " ++ total ++ "\n")
+drawWords dpy win gc font (((total, dead, alive), (x, y)):words) = do
   setForeground dpy gc 0x00ff00
   drawString dpy win gc (ceiling (x - fromIntegral (textWidth font dead))) (ceiling y) (dead ++ alive)
   drawWords dpy win gc font words
@@ -206,6 +212,14 @@ drawPlayer dpy win gc (angle, (ox, oy)) = do
         x2 = ceiling (ox - playerSide * sin ra)
         y2 = ceiling (oy + playerSide * cos ra)
 
+drawScore :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> Int -> IO ()
+drawScore dpy win gc font width height score = do
+  setForeground dpy gc 0xffffff
+  drawString dpy win gc x y text
+  where text = show score
+        x = (fromIntegral width) - 20 - textWidth font text
+        y = 20
+        
 pointPlayerTowards :: Word -> Player -> Player
 pointPlayerTowards (_, (wx, wy)) (oa, (px, py)) = (a, (px, py))
   where a = atan ((wx - px) / (wy - py))
@@ -304,14 +318,16 @@ bulletsWordCollide font (b@(((total, d, alive), (wx, wy)), _, _):bullets) word@(
 possiblyAddWord :: StdGen -> Dimension -> Dimension -> [Word] -> [Word]
 possiblyAddWord rand width height words =
   if (words == [] || randTrue rand newWordChance)
-  then (newWord rand width height words) : words
+  then if (string == "")
+       then words
+       else (newWord rand width height string) : words
   else words
+  where string = pickStringForWord rand words
 
-newWord :: StdGen -> Dimension -> Dimension -> [Word] -> Word
-newWord rand width height words = ((total, "", total), (x, y))
-  where total = pickStringForWord rand words
-        x = fromIntegral (randNum rand (fromIntegral width)) :: Double
-        y = 20.0
+newWord :: StdGen -> Dimension -> Dimension -> String -> Word
+newWord rand width height string = ((string, "", string), (x, y))
+  where x = fromIntegral (randNum rand (fromIntegral width)) :: Double
+        y = -20.0
 
 canUseWord :: String -> [Word] -> Bool
 canUseWord _ [] = False
@@ -323,7 +339,7 @@ canUseWord string (((total, _, _), _) : words) =
 pickStringForWord :: StdGen -> [Word] -> String
 pickStringForWord rand words =
   if (canUseWord string words)
-  then pickStringForWord rand words
+  then ""
   else string
   where string = wordList !! (randNum rand (nwords - 1))
 
