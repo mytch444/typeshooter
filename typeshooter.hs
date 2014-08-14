@@ -72,6 +72,8 @@ playerSide = 20
 fontList :: [String]
 fontList = ["-misc-ubuntu mono-medium-r-normal--0-0-0-0-m-0-iso8859-16", "-xos4-terminus-medium-r-normal--18-240-72-72-c-120-iso10646-1", "-misc-liberation mono-medium-r-normal--0-0-0-0-p-0-iso8859-16",  "fixed"]
 
+collideError = 2
+
 main :: IO ()
 main = do
     dpy <- openDisplay ""
@@ -122,6 +124,68 @@ pause dpy win gc font player bullets words word score = do
         else loop dpy win gc font player bullets words word score
       else pause dpy win gc font player bullets words word score
 
+gameOver :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> Int -> String -> IO ()
+gameOver dpy win gc font width height score name = do
+  setForeground dpy gc 0x000000
+  fillRectangle dpy win gc bx by bw bh
+  setForeground dpy gc 0xffffff
+  drawRectangle dpy win gc bx by bw bh
+
+  drawString dpy win gc
+    (ceiling (x - fromIntegral (textWidth font "Game Over") / 2))
+    (ceiling (y - (textHeight font "Game Over") * 2)) "Game Over"
+  drawString dpy win gc
+    (ceiling (x - fromIntegral (textWidth font scoretext) / 2))
+    (ceiling (y - (textHeight font scoretext))) scoretext
+  drawString dpy win gc
+    (ceiling (x - fromIntegral (textWidth font "Enter Your Name:") / 2))
+    (ceiling y) "Enter Your Name:"
+  drawString dpy win gc
+    (ceiling (x - fromIntegral (textWidth font name) / 2))
+    (ceiling (y + textHeight font name)) name
+
+  allocaXEvent $ \e -> do
+    nextEvent dpy e
+    et <- get_EventType e
+    if (et == keyPress)
+      then do
+      (_, _, _, _, _, _, _, mod, keycode, _) <- get_KeyEvent e
+      keysym <- keycodeToKeysym dpy keycode 0
+      let keystring = keysymToString keysym
+      putStr ("Got key: " ++ keystring ++ "\n")
+      if (keystring == "Return")
+        then saveScore score name
+        else gameOver dpy win gc font width height score (handleGameOverKey name keystring)
+      else gameOver dpy win gc font width height score name
+  where scoretext = "You got a score of " ++ (show score)
+        x = ((fromIntegral width) :: Double) / 2
+        y = ((fromIntegral height) :: Double) / 2
+        possiblew = textWidth font name + 50
+        bw = fromIntegral (if (possiblew > textWidth font scoretext + 50)
+                           then possiblew else textWidth font scoretext + 50) :: Dimension
+        bh = ceiling ((textHeight font name) * 7) :: Dimension
+        bx = ceiling (x - (fromIntegral bw) / 2)
+        by = ceiling (y - (fromIntegral bh) / 2)
+
+handleGameOverKey :: String -> String -> String
+handleGameOverKey name keystring =
+  if (keystring == "BackSpace")
+  then allButLast name
+  else if (keystring == "space")
+       then (name ++ " ")
+       else if (length keystring == 1)
+            then (name ++ keystring)
+            else
+               name
+    
+allButLast :: [a] -> [a]
+allButLast (f:[]) = [f]
+allButLast (f:rest) = f : allButLast rest
+
+saveScore :: Int -> String -> IO ()
+saveScore score name = do
+  return ()
+
 loop :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
 loop dpy win gc font (pa, (px, py)) bullets words word score = do
   (_, _, _, width, height, _, _) <- getGeometry dpy win
@@ -140,12 +204,14 @@ loop dpy win gc font (pa, (px, py)) bullets words word score = do
 
   p <- pending dpy
 
-  if (p == 0)
-    then loop dpy win gc font player
-         (updateBullets font player bullets)
-         (updateWords font height player bullets (possiblyAddWord rand width height words))
-         word score
-    else handleEvent dpy win gc font width height rand player bullets words word score
+  if (wordsPlayerCollide font words player)
+    then gameOver dpy win gc font width height score ""
+    else if (p == 0)
+         then loop dpy win gc font player
+              (updateBullets font player bullets)
+              (updateWords font height player bullets (possiblyAddWord rand width height words))
+              word score
+         else handleEvent dpy win gc font width height rand player bullets words word score
 
 handleEvent :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> StdGen -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
 handleEvent dpy win gc font width height rand player bullets words word score =
@@ -227,7 +293,7 @@ pointPlayerTowards (_, (wx, wy)) (oa, (px, py)) = (a, (px, py))
 updateBullets :: FontStruct -> Player -> [Bullet] -> [Bullet]
 updateBullets _ _ [] = []
 updateBullets font player@(_, playerpos) (b@(word@(text@(_, d, _), (wx, wy)), _, (x2, y2)) : bullets) =
-  if (bulletWordCollide font b wp ww wh)
+  if (collide wp ww wh (x2, y2))
   then updateBullets font player bullets
   else (
     (updateWord font player [] word,
@@ -249,7 +315,7 @@ updateWords font height player bullets (word@(((_, dead, alive)), (_, y)):words)
 updateWord :: FontStruct -> Player -> [Bullet] -> Word -> Word
 updateWord font player bullets (((total, dead, alive)), pos@(x, y)) =
   ((total, dying, alive),
-   moveWordTo font player pos)
+   moveWordTo font player (dead ++ alive) pos)
   where collides = bulletsWordCollide font bullets
                    ((total, dead, alive), (x - fromIntegral (textWidth font dead), y))
         dying = if collides then tail dead else dead
@@ -290,9 +356,11 @@ moveTo (gx, gy) gw gh (sx, sy) speed = (sx + speed * sin o, sy + speed * cos o)
         xd = (gx + gw / 2) - sx
         yd = gy - sy
 
-moveWordTo :: FontStruct -> Player -> Location -> Location
-moveWordTo font (_, player) pos =
-  moveTo player playerSide playerSide pos wordSpeed
+moveWordTo :: FontStruct -> Player -> String -> Location -> Location
+moveWordTo font (_, (px, py)) text pos =
+  moveTo (nx, py) playerSide playerSide pos wordSpeed
+  where textW = fromIntegral (textWidth font text) :: Double
+        nx = px - textW / 2
 
 moveBulletTo :: FontStruct -> Word -> Location -> Location
 moveBulletTo font ((_, dead, _), wp) pos =
@@ -300,21 +368,33 @@ moveBulletTo font ((_, dead, _), wp) pos =
   where width = fromIntegral(textWidth font [head dead])
         height = textHeight font [head dead]
 
-bulletWordCollide :: FontStruct -> Bullet -> Location -> Double -> Double -> Bool
-bulletWordCollide font (_, (bx, by), _) (wx, wy) w h =
-  wx - 2.5 <= bx && wx + 2.5 + w >= bx && wy >= by
+collide ::Location -> Double -> Double -> Location -> Bool
+collide (ax, ay) w h (bx, by) =
+  ax - collideError <= bx &&
+  ax + collideError + w >= bx &&
+  ay - collideError <= by &&
+  ay + collideError + h >= by
 
 bulletsWordCollide :: FontStruct -> [Bullet] -> Word -> Bool
 bulletsWordCollide _ [] _ = False
-bulletsWordCollide font (b@(((total, d, alive), (wx, wy)), _, _):bullets) word@((t, _, _), _) =
-  if (total == t && bulletWordCollide font b wp ww wh)
+bulletsWordCollide font (b@(((total, d, alive), (wx, wy)), _, bp):bullets) word@((t, _, _), _) =
+  if (total == t && collide wp ww wh bp)
   then True
   else bulletsWordCollide font bullets word
   where targetChar = if d == "" then "" else [head d]
         ww = fromIntegral (textWidth font targetChar)
         wh = textHeight font targetChar
-        wp = (wx - fromIntegral (textWidth font targetChar), wy)
+        wp = (wx - ww, wy)
 
+wordsPlayerCollide :: FontStruct -> [Word] -> Player -> Bool
+wordsPlayerCollide _ [] _ = False
+wordsPlayerCollide font (((_, dead, alive), wp) : words) p@(_, pp) =
+  if (collide wp ww wh pp)
+  then True
+  else wordsPlayerCollide font words p
+  where ww = fromIntegral (textWidth font (dead ++ alive)) :: Double
+        wh = textHeight font (dead ++ alive)
+  
 possiblyAddWord :: StdGen -> Dimension -> Dimension -> [Word] -> [Word]
 possiblyAddWord rand width height words =
   if (words == [] || randTrue rand newWordChance)
