@@ -1,24 +1,28 @@
 module Main where
-import Prelude hiding (catch)
-import Graphics.X11.Xlib hiding (Angle)
+import Prelude
+import Graphics.X11.Xlib
 import Graphics.X11.Xlib.Event
 import Graphics.X11.Xlib.Extras
-import Graphics.X11.Xlib.Misc (drawLine, drawLines)
+import Graphics.X11.Xlib.Misc
 import Graphics.X11.Xlib.Context
 import System.Exit (exitWith, ExitCode(..))
 import Control.Concurrent 
 import Control.Exception
-import System.Posix.Types (Fd(..))
 import Data.Int
 import Foreign.Ptr
 import Data.Bits
 import System.Random
 import Control.Exception
+import System.IO
+import Text.Regex
 
 type Location = (Double, Double)
 type Word = (([Char], [Char], [Char]), Location)
 type Bullet = (Word, Location, Location)
 type Player = (Double, Location)
+
+highscoresFileName = "/home/dbs/.typeshooter"
+tmpFileName = "/tmp/typeshooter"
 
 wordList :: [String]
 wordList = [
@@ -155,7 +159,7 @@ gameOver dpy win gc font width height score name = do
       putStr ("Got key: " ++ keystring ++ "\n")
       if (keystring == "Return")
         then saveScore score name
-        else gameOver dpy win gc font width height score (handleGameOverKey name keystring)
+        else gameOver dpy win gc font width height score (handleKeyGameOver name keystring)
       else gameOver dpy win gc font width height score name
   where scoretext = "You got a score of " ++ (show score)
         x = ((fromIntegral width) :: Double) / 2
@@ -167,24 +171,56 @@ gameOver dpy win gc font width height score name = do
         bx = ceiling (x - (fromIntegral bw) / 2)
         by = ceiling (y - (fromIntegral bh) / 2)
 
-handleGameOverKey :: String -> String -> String
-handleGameOverKey name keystring =
+handleKeyGameOver :: String -> String -> String
+handleKeyGameOver name keystring =
   if (keystring == "BackSpace")
   then allButLast name
   else if (keystring == "space")
        then (name ++ " ")
        else if (length keystring == 1)
             then (name ++ keystring)
-            else
-               name
+            else name
     
 allButLast :: [a] -> [a]
-allButLast (f:[]) = [f]
+allButLast [] = []
+allButLast (f:[]) = []
 allButLast (f:rest) = f : allButLast rest
 
 saveScore :: Int -> String -> IO ()
 saveScore score name = do
-  return ()
+  inh <- openFile highscoresFileName ReadMode
+  outh <- openFile tmpFileName WriteMode
+  saveScoreReal score name inh outh
+  hClose outh
+  hClose inh
+
+  tmp <- readFile tmpFileName
+  writeFile highscoresFileName tmp
+
+saveScoreReal :: Int -> String -> Handle -> Handle -> IO ()
+saveScoreReal score name inh outh = do
+  ineof <- hIsEOF inh
+  if ineof
+    then if name == "" then return () else writeScore
+    else do
+    input <- hGetLine inh
+    let (cs, cn) = getNameScoreFromString input
+    if cs < score
+      then do
+           writeScore
+           hPutStrLn outh input
+           saveScoreReal 0 "" inh outh
+      else do
+           hPutStrLn outh input
+           saveScoreReal score name inh outh
+  where writeScore = hPutStrLn outh (name ++ ":" ++ (show score))
+
+getNameScoreFromString :: String -> (Int, String)
+getNameScoreFromString input =
+  (score, name)
+  where regex = mkRegex ":"
+        (name : scorestring : []) = splitRegex regex input
+        score = read scorestring
 
 loop :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
 loop dpy win gc font (pa, (px, py)) bullets words word score = do
