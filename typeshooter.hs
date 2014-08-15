@@ -14,6 +14,7 @@ import Data.Bits
 import System.Random
 import Control.Exception
 import System.IO
+import System.Directory
 import Text.Regex
 
 type Location = (Double, Double)
@@ -21,8 +22,8 @@ type Word = (([Char], [Char], [Char]), Location)
 type Bullet = (Word, Location, Location)
 type Player = (Double, Location)
 
-highscoresFileName = "/home/dbs/.typeshooter"
-tmpFileName = "/tmp/typeshooter"
+highscoresFileName = "/.typeshooter"
+tmpFilePath = "/tmp/typeshooter"
 
 wordList :: [String]
 wordList = [
@@ -54,11 +55,12 @@ wordList = [
   "words",
   "graphics",
   "x11",
-  "xorg"
+  "xorg",
+  "3281",
+  "b3cnt",
+  "37bec",
+  "amvios"
   ]
-
-nwords :: Int
-nwords = length wordList
 
 fps :: Float
 fps = 60
@@ -69,14 +71,21 @@ delay = ceiling (1000 / fps) * 1000
 bulletSpeed = -6
 wordSpeed = 1
 
-newWordChance = 10
+newWordChance :: Int -> Int
+newWordChance s = 5000 `div` score
+                  where score = if s < 100 then 100 else s
 
 playerSide = 20
 
 fontList :: [String]
-fontList = ["-misc-ubuntu mono-medium-r-normal--0-0-0-0-m-0-iso8859-16", "-xos4-terminus-medium-r-normal--18-240-72-72-c-120-iso10646-1", "-misc-liberation mono-medium-r-normal--0-0-0-0-p-0-iso8859-16",  "fixed"]
+fontList = ["-misc-ubuntu mono-medium-r-normal--0-0-0-0-m-0-iso8859-16",
+            "-xos4-terminus-medium-r-normal--18-240-72-72-c-120-iso10646-1",
+            "-misc-liberation mono-medium-r-normal--0-0-0-0-p-0-iso8859-16",
+            "fixed"]
 
-collideError = 2
+collideErrorMargin = 1
+
+maxNameLength = 40
 
 main :: IO ()
 main = do
@@ -115,6 +124,12 @@ textHeight font string = fromIntegral (ascent + descent)
 
 pause :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
 pause dpy win gc font player bullets words word score = do
+  (_, _, _, width, height, _, _) <- getGeometry dpy win
+
+  drawString dpy win gc
+    (fromIntegral width `div` 2 - fromIntegral (textWidth font "Space to resume.") `div` 2)
+    (fromIntegral height `div` 2) "Space to resume."
+
   allocaXEvent $ \e -> do
     putStr "Pausing\n"
     nextEvent dpy e
@@ -123,9 +138,12 @@ pause dpy win gc font player bullets words word score = do
       then do
       (_, _, _, _, _, _, _, mod, keycode, _) <- get_KeyEvent e
       keysym <- keycodeToKeysym dpy keycode 0
-      if ((keysymToString keysym) == "Escape")
+      let string = keysymToString keysym
+      if (string == "Escape")
         then return ()
-        else loop dpy win gc font player bullets words word score
+        else if (string == "space")
+             then loop dpy win gc font player bullets words word score
+             else pause dpy win gc font player bullets words word score
       else pause dpy win gc font player bullets words word score
 
 gameOver :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> Int -> String -> IO ()
@@ -156,9 +174,12 @@ gameOver dpy win gc font width height score name = do
       (_, _, _, _, _, _, _, mod, keycode, _) <- get_KeyEvent e
       keysym <- keycodeToKeysym dpy keycode 0
       let keystring = keysymToString keysym
-      putStr ("Got key: " ++ keystring ++ "\n")
+      putStrLn ("Got key: " ++ keystring)
       if (keystring == "Return")
-        then saveScore score name
+        then
+         do
+           saveScore score name
+           showHighscores dpy win gc font width height
         else gameOver dpy win gc font width height score (handleKeyGameOver name keystring)
       else gameOver dpy win gc font width height score name
   where scoretext = "You got a score of " ++ (show score)
@@ -175,11 +196,13 @@ handleKeyGameOver :: String -> String -> String
 handleKeyGameOver name keystring =
   if (keystring == "BackSpace")
   then allButLast name
-  else if (keystring == "space")
-       then (name ++ " ")
-       else if (length keystring == 1)
-            then (name ++ keystring)
-            else name
+  else if (length name > maxNameLength)
+       then name
+       else if (keystring == "space")
+            then (name ++ " ")
+            else if (length keystring == 1)
+                 then (name ++ keystring)
+                 else name
     
 allButLast :: [a] -> [a]
 allButLast [] = []
@@ -188,14 +211,16 @@ allButLast (f:rest) = f : allButLast rest
 
 saveScore :: Int -> String -> IO ()
 saveScore score name = do
-  inh <- openFile highscoresFileName ReadMode
-  outh <- openFile tmpFileName WriteMode
+  home <- getHomeDirectory
+  let highscoresFilePath = (home ++ highscoresFileName)
+  inh <- openFile highscoresFilePath ReadMode
+  outh <- openFile tmpFilePath WriteMode
   saveScoreReal score name inh outh
   hClose outh
   hClose inh
 
-  tmp <- readFile tmpFileName
-  writeFile highscoresFileName tmp
+  tmp <- readFile tmpFilePath
+  writeFile highscoresFilePath tmp
 
 saveScoreReal :: Int -> String -> Handle -> Handle -> IO ()
 saveScoreReal score name inh outh = do
@@ -222,6 +247,55 @@ getNameScoreFromString input =
         (name : scorestring : []) = splitRegex regex input
         score = read scorestring
 
+showHighscores :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> IO ()        
+showHighscores dpy win gc font width height = do
+  setForeground dpy gc 0x000000
+  fillRectangle dpy win gc bx by bw bh
+  setForeground dpy gc 0xffffff
+  drawRectangle dpy win gc bx by bw bh
+
+  drawString dpy win gc
+    (fromIntegral x - (textWidth font menuMessage) `div` 2)
+    (by + ceiling (textHeight font menuMessage) * 2) menuMessage
+
+  home <- getHomeDirectory
+  let highscoresFilePath = (home ++ highscoresFileName)
+  inh <- openFile highscoresFilePath ReadMode
+
+  drawHighscoresFromFile dpy win gc font bw (fromIntegral by + bh) bx sy inh
+
+  hClose inh
+
+  allocaXEvent $ \e -> do
+    nextEvent dpy e
+    et <- get_EventType e
+    if (et == keyPress)
+      then return ()
+      else showHighscores dpy win gc font width height
+  where x = width `div` 2
+        y = height `div` 2
+        bw = fromIntegral (((fromIntegral (textWidth font "a")) :: Int) * (maxNameLength + 20)) :: Dimension
+        bh = height - 100
+        bx = fromIntegral (x - bw `div` 2) :: Position
+        by = fromIntegral (y - bh `div` 2) :: Position
+        menuMessage = "Highscores So Far..."
+        sy = by + ceiling (textHeight font menuMessage) * 4
+
+drawHighscoresFromFile :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> Position -> Position -> Handle -> IO ()
+drawHighscoresFromFile dpy win gc font width bottom x y inh = do
+  ineof <- hIsEOF inh
+  if (ineof || y > fromIntegral bottom - 20)
+     then return ()
+    else do
+    input <- hGetLine inh
+    let (score, name) = getNameScoreFromString input
+      
+    drawString dpy win gc (x + 20) y name
+    drawString dpy win gc
+      (fromIntegral (x + fromIntegral width - 20 - (textWidth font (show score))) :: Position)
+      y (show score)
+    drawHighscoresFromFile dpy win gc font width bottom x (y + ceiling (textHeight font input)) inh
+         
 loop :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
 loop dpy win gc font (pa, (px, py)) bullets words word score = do
   (_, _, _, width, height, _, _) <- getGeometry dpy win
@@ -245,7 +319,7 @@ loop dpy win gc font (pa, (px, py)) bullets words word score = do
     else if (p == 0)
          then loop dpy win gc font player
               (updateBullets font player bullets)
-              (updateWords font height player bullets (possiblyAddWord rand width height words))
+              (updateWords font height player bullets (possiblyAddWord rand width height score words))
               word score
          else handleEvent dpy win gc font width height rand player bullets words word score
 
@@ -262,7 +336,7 @@ handleEvent dpy win gc font width height rand player bullets words word score =
       handleKeyPress dpy win gc font width height rand player bullets words word score keysym
       else loop dpy win gc font player
            (updateBullets font player bullets)
-           (updateWords font height player bullets (possiblyAddWord rand width height words))
+           (updateWords font height player bullets (possiblyAddWord rand width height score words))
            word score
 
 handleKeyPress :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimension -> StdGen -> Player -> [Bullet] -> [Word] -> Word -> Int -> KeySym -> IO ()
@@ -276,7 +350,7 @@ handleKeyPress dpy win gc font width height rand player bullets words word@((_, 
             (updateWord font player bullets updatednewword) (score + 1)
        else next player
            (updateBullets font player bullets)
-           (updateWords font height player bullets (possiblyAddWord rand width height words))
+           (updateWords font height player bullets (possiblyAddWord rand width height score words))
            word score
   where string = keysymToString keysym
         char = string !! 0
@@ -406,10 +480,10 @@ moveBulletTo font ((_, dead, _), wp) pos =
 
 collide ::Location -> Double -> Double -> Location -> Bool
 collide (ax, ay) w h (bx, by) =
-  ax - collideError <= bx &&
-  ax + collideError + w >= bx &&
-  ay - collideError <= by &&
-  ay + collideError + h >= by
+  ax - collideErrorMargin <= bx &&
+  ax + collideErrorMargin + w >= bx &&
+  ay - collideErrorMargin <= by &&
+  ay + collideErrorMargin + h >= by
 
 bulletsWordCollide :: FontStruct -> [Bullet] -> Word -> Bool
 bulletsWordCollide _ [] _ = False
@@ -431,9 +505,9 @@ wordsPlayerCollide font (((_, dead, alive), wp) : words) p@(_, pp) =
   where ww = fromIntegral (textWidth font (dead ++ alive)) :: Double
         wh = textHeight font (dead ++ alive)
   
-possiblyAddWord :: StdGen -> Dimension -> Dimension -> [Word] -> [Word]
-possiblyAddWord rand width height words =
-  if (words == [] || randTrue rand newWordChance)
+possiblyAddWord :: StdGen -> Dimension -> Dimension -> Int -> [Word] -> [Word]
+possiblyAddWord rand width height score words =
+  if (words == [] || randTrue rand (newWordChance score))
   then if (string == "")
        then words
        else (newWord rand width height string) : words
@@ -457,7 +531,7 @@ pickStringForWord rand words =
   if (canUseWord string words)
   then ""
   else string
-  where string = wordList !! (randNum rand (nwords - 1))
+  where string = wordList !! (randNum rand ((length wordList) - 1))
 
 randNum :: StdGen -> Int -> Int
 randNum rand max = num
