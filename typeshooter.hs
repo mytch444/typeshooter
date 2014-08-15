@@ -104,6 +104,7 @@ main = do
     fontstruct <- getFont dpy 0
     setFont dpy gc (fontFromFontStruct fontstruct)
 
+    showStartMenu dpy win gc fontstruct
     loop dpy win gc fontstruct (0.0, (0.0, 0.0)) [] [] (("", "", ""), (0, 0)) 0
 
     freeGC dpy gc
@@ -122,6 +123,33 @@ textHeight :: FontStruct -> String -> Double
 textHeight font string = fromIntegral (ascent + descent)
                   where (_, ascent, descent, _) = textExtents font string
 
+showStartMenu :: Display -> Window -> GC -> FontStruct -> IO ()
+showStartMenu dpy win gc font = do
+  (_, _, _, width, height, _, _) <- getGeometry dpy win
+
+  setForeground dpy gc 0x000000
+  fillRectangle dpy win gc 0 0 width height
+  setForeground dpy gc 0xffffff
+  
+  drawString dpy win gc
+    (fromIntegral width `div` 2 - fromIntegral (textWidth font "TYPESHOOTER") `div` 2)
+    (fromIntegral height `div` 2 - ceiling (textHeight font "TYPESHOOTER")) "TYPESHOOTER"
+
+  drawString dpy win gc
+    (fromIntegral width `div` 2 - fromIntegral (textWidth font "Type out the words to shoot, don't let them hit you.") `div` 2)
+    (fromIntegral height `div` 2) "Type out the words to shoot, don't let them hit you."
+
+  drawString dpy win gc
+    (fromIntegral width `div` 2 - fromIntegral (textWidth font "Press any key to play. Escape pauses, escape again to exit.") `div` 2)
+    (fromIntegral height `div` 2 + ceiling (textHeight font "Press any key to play. Escape pauses, escape again to exit.")) "Press any key to play. Escape pauses, escape again to exit."
+
+  allocaXEvent $ \e -> do
+    nextEvent dpy e
+    et <- get_EventType e
+    if (et == keyPress)
+      then return ()
+      else showStartMenu dpy win gc font
+           
 pause :: Display -> Window -> GC -> FontStruct -> Player -> [Bullet] -> [Word] -> Word -> Int -> IO ()
 pause dpy win gc font player bullets words word score = do
   (_, _, _, width, height, _, _) <- getGeometry dpy win
