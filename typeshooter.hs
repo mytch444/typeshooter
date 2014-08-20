@@ -371,7 +371,7 @@ handleKeyPress :: Display -> Window -> GC -> FontStruct -> Dimension -> Dimensio
 handleKeyPress dpy win gc font width height rand player bullets words word@((_, _, alive), _) score keysym =
   if (string == "Escape")
   then pause dpy win gc font player bullets words word score
-  else if (not (newalive == "") && newalive !! 0 == char)
+  else if (newalive /= "" && newalive !! 0 == char)
        then next (pointPlayerTowards newword player)
             (updateBullets font player ((createBullet font player updatednewword) : bullets))
             (updateWords font height player bullets (swapWordInList updatednewword newword words))
@@ -477,7 +477,7 @@ createBullet font (_, player) word =
 findWordWithChar :: [Word] -> Char -> Word
 findWordWithChar [] _  = (("", "", ""), (0, 0))
 findWordWithChar (word@((_, _, alive), _) : words) char =
-  if (alive == "" || not (alive !! 0 == char))
+  if (alive == "" || alive !! 0 /= char)
   then (findWordWithChar words char)
   else word
 
